@@ -23,8 +23,19 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Mint scanner token (org-wide read access for action ref resolution)
+        id: app-token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PRIVATE_KEY }}
+          owner: rudderlabs
+          permission-contents: read
+          permission-metadata: read
+
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
         with:
           advanced-security: true
           min-severity: medium
+          token: ${{ steps.app-token.outputs.token }}
