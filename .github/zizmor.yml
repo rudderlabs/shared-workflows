@@ -1,0 +1,30 @@
+# zizmor configuration for shared-workflows
+# https://docs.zizmor.sh/configuration/
+
+rules:
+  # Suppress secrets-outside-env for the zizmor workflow itself.
+  #
+  # The audit is a real Severity::Medium, Confidence::High finding in zizmor
+  # v1.23.1 — it correctly notes that this job references a secret without a
+  # named GitHub Environment guarding execution. The standard mitigation is to
+  # bind the job to an `environment:` with required reviewers, but this
+  # workflow is injected by the org required-workflow ruleset into every
+  # rudderlabs repo and runs in the *target* repo's context. An
+  # `environment:` directive here would only resolve in repos that happen to
+  # define a matching environment, which none of them do, so the standard fix
+  # cannot apply.
+  #
+  # The residual risk is bounded by the App registration, not by this file:
+  # the secret is the private key of the dedicated `ZIZMOR_SCANNER` GitHub
+  # App, which is registered with `Repository: Contents: Read, Metadata: Read`
+  # only — no write access to anything, anywhere. Worst-case exfiltration is
+  # ~1 hour of read-only access to public + internal repository source code,
+  # which is the same access surface every employee already has via their
+  # personal GitHub account. The blast radius does not justify gating PRs on
+  # this finding.
+  secrets-outside-env:
+    ignore:
+      # NOTE: zizmor matches `ignore` rules on the file's basename, not its
+      # full path (see WorkflowRule matching in zizmor v1.23.1
+      # crates/zizmor/src/config/mod.rs:639). Bare basename is required.
+      - zizmor.yml
