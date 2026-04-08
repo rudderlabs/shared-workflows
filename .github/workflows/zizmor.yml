@@ -49,7 +49,11 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: rudderlabs/shared-workflows
-          ref: main
+          # For self-scans (PRs against shared-workflows itself), test the
+          # PR's proposed config — otherwise a PR that breaks .github/zizmor.yml
+          # would be validated against main's config and merge green. For
+          # injected runs in other repos, pin to main for stability.
+          ref: ${{ github.repository == 'rudderlabs/shared-workflows' && github.event.pull_request.head.sha || 'main' }}
           token: ${{ steps.app-token.outputs.token }}
           path: .zizmor-shared
           persist-credentials: false
