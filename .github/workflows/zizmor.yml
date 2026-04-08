@@ -18,11 +18,17 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Checkout
+      - name: Checkout target repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
 
+      # Intentionally fails loudly when the org-level variable/secret is
+      # missing (e.g. fork PRs, where GitHub withholds secrets from workflows
+      # triggered from forks). A red check on the required workflow is the
+      # desired signal: it forces a human to either mark the PR trusted or
+      # investigate why the scanner credentials are unavailable. Do NOT add
+      # an `if:` guard here to silently skip — loud failure is the contract.
       - name: Mint scanner token (org-wide read access for action ref resolution)
         id: app-token
         uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
@@ -33,9 +39,28 @@ jobs:
           permission-contents: read
           permission-metadata: read
 
+      # Inject the shared zizmor config from this repo into the target repo's
+      # run context. Required because zizmor only auto-discovers config from
+      # the checked-out working tree, and injected runs check out the target
+      # repo's tree, not shared-workflows. Without this step, any config-level
+      # rule overrides we ship here (e.g. the `secrets-outside-env` ignore for
+      # the zizmor workflow itself) would never apply to injected runs.
+      - name: Checkout shared zizmor config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: rudderlabs/shared-workflows
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+          path: .zizmor-shared
+          persist-credentials: false
+          sparse-checkout: |
+            .github/zizmor.yml
+          sparse-checkout-cone-mode: false
+
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
         with:
           advanced-security: true
           min-severity: medium
+          config: .zizmor-shared/.github/zizmor.yml
           token: ${{ steps.app-token.outputs.token }}
