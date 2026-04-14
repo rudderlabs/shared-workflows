@@ -68,3 +68,4 @@ jobs:
           min-severity: medium
           config: .zizmor-shared/.github/zizmor.yml
           token: ${{ steps.app-token.outputs.token }}
+          fail-on-no-inputs: false
