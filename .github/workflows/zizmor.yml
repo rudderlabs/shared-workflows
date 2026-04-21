@@ -2,6 +2,7 @@ name: zizmor
 
 on:
   pull_request:
+  push:
 
 permissions:
   contents: read
@@ -10,7 +11,14 @@ permissions:
 
 jobs:
   scan:
-    if: github.actor != 'dependabot[bot]'
+    # Gate push events to the target repo's default branch only.
+    # `on.push.branches` can't reference repository context, so we filter
+    # here with `github.event.repository.default_branch` to stay correct
+    # across repos that use `main`, `master`, or anything else.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name != 'push' ||
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -61,11 +69,43 @@ jobs:
             .github/zizmor.yml
           sparse-checkout-cone-mode: false
 
+      # Exit codes: 0 = clean, 1 = findings, 3 = no inputs, other = error.
+      # SARIF is uploaded only when valid (see next step).
       - name: Run zizmor
-        uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+        id: zizmor
+        run: |
+          sarif="${RUNNER_TEMP}/zizmor.sarif"
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --workdir "/workspace" \
+            --env "GH_TOKEN=${SCANNER_TOKEN}" \
+            "ghcr.io/zizmorcore/zizmor:1.23.1@sha256:a58f658823d78dd38762f1ce44e31265d636bbfb8b1462cef1dfb1af788d3b86" \
+            --format=sarif \
+            --persona=regular \
+            --min-severity=medium \
+            --config=.zizmor-shared/.github/zizmor.yml \
+            -- . | tee "${sarif}" || true
+
+          exitcode="${PIPESTATUS[0]}"
+
+          if [[ -s "${sarif}" ]] && jq empty "${sarif}" 2>/dev/null; then
+            echo "sarif-valid=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "sarif-valid=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+          case "${exitcode}" in
+            0|1) ;; # clean or findings — both OK
+            3)   echo "::warning::No auditable inputs in this repository" ;;
+            *)   echo "::error::zizmor failed with exit code ${exitcode}"; exit "${exitcode}" ;;
+          esac
+        env:
+          SCANNER_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: Upload SARIF
+        if: steps.zizmor.outputs.sarif-valid == 'true'
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4.32.4
         with:
-          advanced-security: true
-          min-severity: medium
-          config: .zizmor-shared/.github/zizmor.yml
-          token: ${{ steps.app-token.outputs.token }}
-          fail-on-no-inputs: false
+          sarif_file: ${{ runner.temp }}/zizmor.sarif
+          category: zizmor
+          checkout_path: ${{ github.workspace }}
