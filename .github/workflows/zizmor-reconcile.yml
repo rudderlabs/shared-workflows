@@ -1,0 +1,142 @@
+name: zizmor-reconcile
+
+on:
+  repository_dispatch:
+    types: [zizmor-reconcile]
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Target repo (name only, e.g. rudder-sdk-swift)"
+        required: true
+        type: string
+      sha:
+        description: "Target commit SHA (defaults to default-branch HEAD at checkout)"
+        required: false
+        type: string
+      default_branch:
+        description: "Target default branch (required — no fallback, to keep SARIF attribution correct)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: zizmor-reconcile-${{ github.event.client_payload.repo || inputs.repo }}
+      cancel-in-progress: true
+    env:
+      TARGET_REPO: ${{ github.event.client_payload.repo || inputs.repo }}
+      TARGET_SHA_INPUT: ${{ github.event.client_payload.sha || inputs.sha }}
+      TARGET_BRANCH: ${{ github.event.client_payload.default_branch || inputs.default_branch }}
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Validate dispatch payload
+        run: |
+          if [[ -z "${TARGET_REPO}" ]]; then
+            echo "::error::dispatch payload missing 'repo'"
+            exit 1
+          fi
+          if [[ -z "${TARGET_BRANCH}" ]]; then
+            echo "::error::dispatch payload missing 'default_branch' — refuse to guess, SARIF would mis-attribute"
+            exit 1
+          fi
+
+      # Mint a token scoped to the target repo only, with the permissions
+      # needed for zizmor (contents/metadata for ref resolution) plus
+      # security_events: write so we can POST the SARIF back.
+      - name: Mint scanner token (target repo scope)
+        id: app-token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        with:
+          app-id: ${{ vars.ZIZMOR_SCANNER_APP_ID }}
+          private-key: ${{ secrets.ZIZMOR_SCANNER_PRIVATE_KEY }}
+          owner: rudderlabs
+          repositories: ${{ env.TARGET_REPO }}
+          permission-contents: read
+          permission-metadata: read
+          permission-security-events: write
+
+      - name: Checkout target repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: rudderlabs/${{ env.TARGET_REPO }}
+          ref: ${{ env.TARGET_SHA_INPUT || env.TARGET_BRANCH }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target
+          persist-credentials: false
+
+      - name: Resolve target SHA
+        id: sha
+        working-directory: target
+        run: |
+          resolved=$(git rev-parse HEAD)
+          echo "sha=${resolved}" >> "$GITHUB_OUTPUT"
+          echo "Resolved target SHA: ${resolved}"
+
+      - name: Checkout shared zizmor config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: rudderlabs/shared-workflows
+          ref: main
+          path: .zizmor-shared
+          persist-credentials: false
+          sparse-checkout: |
+            .github/zizmor.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Run zizmor
+        id: zizmor
+        env:
+          SCANNER_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          sarif="${RUNNER_TEMP}/zizmor.sarif"
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}/target:/workspace:ro" \
+            --volume "${GITHUB_WORKSPACE}/.zizmor-shared:/zizmor-config:ro" \
+            --workdir "/workspace" \
+            --env "GH_TOKEN=${SCANNER_TOKEN}" \
+            "ghcr.io/zizmorcore/zizmor:1.23.1@sha256:a58f658823d78dd38762f1ce44e31265d636bbfb8b1462cef1dfb1af788d3b86" \
+            --format=sarif \
+            --persona=regular \
+            --min-severity=medium \
+            --config=/zizmor-config/.github/zizmor.yml \
+            -- . | tee "${sarif}" || true
+
+          exitcode="${PIPESTATUS[0]}"
+
+          if [[ -s "${sarif}" ]] && jq empty "${sarif}" 2>/dev/null; then
+            echo "sarif-valid=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "sarif-valid=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+          case "${exitcode}" in
+            0|1) ;; # clean or findings — both OK
+            3)   echo "::warning::No auditable inputs in target repo"; echo "skip=true" >> "${GITHUB_OUTPUT}" ;;
+            *)   echo "::error::zizmor failed with exit code ${exitcode}"; exit "${exitcode}" ;;
+          esac
+
+      - name: Upload SARIF to target repo
+        if: steps.zizmor.outputs.sarif-valid == 'true' && steps.zizmor.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TARGET_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          sarif="${RUNNER_TEMP}/zizmor.sarif"
+          gzip -c "${sarif}" | base64 -w0 > "${RUNNER_TEMP}/sarif.b64"
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/rudderlabs/${TARGET_REPO}/code-scanning/sarifs" \
+            -f commit_sha="${TARGET_SHA}" \
+            -f ref="refs/heads/${TARGET_BRANCH}" \
+            -F "sarif=@${RUNNER_TEMP}/sarif.b64"
