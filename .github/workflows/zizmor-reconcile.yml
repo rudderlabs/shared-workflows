@@ -132,6 +132,13 @@ jobs:
           TARGET_SHA: ${{ steps.sha.outputs.sha }}
         run: |
           sarif="${RUNNER_TEMP}/zizmor.sarif"
+          # Stamp automationDetails.id so GHAS pairs this baseline with PR
+          # analyses uploaded under category "zizmor" by zizmor.yml. The
+          # codeql-action upload-sarif action appends a trailing slash to the
+          # category before writing it here; match that exact format.
+          jq '.runs |= map(.automationDetails = ((.automationDetails // {}) + {id: "zizmor/"}))' \
+            "${sarif}" > "${sarif}.cat"
+          mv "${sarif}.cat" "${sarif}"
           gzip -c "${sarif}" | base64 -w0 > "${RUNNER_TEMP}/sarif.b64"
           gh api \
             --method POST \
