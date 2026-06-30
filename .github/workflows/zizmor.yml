@@ -43,7 +43,7 @@ jobs:
         with:
           app-id: ${{ vars.ZIZMOR_SCANNER_APP_ID }}
           private-key: ${{ secrets.ZIZMOR_SCANNER_PRIVATE_KEY }}
-          owner: rudderlabs
+          owner: rudderlabs # zizmor: ignore[github-app] org-wide read-only scanner token (contents+metadata: read); breadth is intentional for action-ref resolution, write exposure is nil
           permission-contents: read
           permission-metadata: read
 
@@ -79,7 +79,7 @@ jobs:
             --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
             --workdir "/workspace" \
             --env "GH_TOKEN=${SCANNER_TOKEN}" \
-            "ghcr.io/zizmorcore/zizmor:1.23.1@sha256:a58f658823d78dd38762f1ce44e31265d636bbfb8b1462cef1dfb1af788d3b86" \
+            "ghcr.io/zizmorcore/zizmor:1.26.1@sha256:d1117e5dbd9ee4970644067b534ab6ab50371f3c6f7f4d05446eb603a6e78f48" \
             --format=sarif \
             --persona=regular \
             --min-severity=medium \
