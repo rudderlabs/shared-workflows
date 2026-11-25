@@ -1,0 +1,36 @@
+name: Join multi-arch image index
+description: Join the per-platform digests that build-scan-push-action just pushed into one multi-arch index. Correctness check, not a security control.
+author: rudderlabs
+
+inputs:
+  image:
+    description: "Image repository without tag or digest, taken from the repositories output of build-scan-push-action. The children must already exist in it."
+    required: true
+  tags:
+    description: "Tags the index is written to, one per line (e.g. 1.2.3, 1.2, latest). Tags that already hold an index with exactly these children are not rewritten"
+    required: true
+  children:
+    description: "One child per line, '<os>/<arch>[/<variant>]@sha256:<digest>' (e.g. linux/amd64@sha256:...). At least one."
+    required: true
+  revision:
+    description: "Expected value of the org.opencontainers.image.revision label on every child. build-scan-push-action >= v2.5.0 sets it"
+    required: false
+    default: ${{ github.sha }}
+
+outputs:
+  digest:
+    description: "Digest of the published index"
+    value: ${{ steps.join.outputs.digest }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Join children into an index
+      id: join
+      shell: bash
+      env:
+        JOIN_IMAGE: ${{ inputs.image }}
+        JOIN_TAGS: ${{ inputs.tags }}
+        JOIN_CHILDREN: ${{ inputs.children }}
+        JOIN_REVISION: ${{ inputs.revision }}
+      run: bash "$GITHUB_ACTION_PATH/join.sh"
